@@ -21,6 +21,8 @@ package org.apache.flink.training.exercises.longrides;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -30,7 +32,6 @@ import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.training.exercises.common.datatypes.TaxiRide;
 import org.apache.flink.training.exercises.common.sources.TaxiRideGenerator;
-import org.apache.flink.training.exercises.common.utils.MissingSolutionException;
 import org.apache.flink.util.Collector;
 
 import java.time.Duration;
@@ -47,7 +48,9 @@ public class LongRidesExercise {
     private final SourceFunction<TaxiRide> source;
     private final SinkFunction<Long> sink;
 
-    /** Creates a job using the source and sink provided. */
+    /**
+     * Creates a job using the source and sink provided.
+     */
     public LongRidesExercise(SourceFunction<TaxiRide> source, SinkFunction<Long> sink) {
         this.source = source;
         this.sink = sink;
@@ -98,17 +101,42 @@ public class LongRidesExercise {
     @VisibleForTesting
     public static class AlertFunction extends KeyedProcessFunction<Long, TaxiRide, Long> {
 
+        private transient ValueState<TaxiRide> firstEvent;
+
         @Override
-        public void open(Configuration config) throws Exception {
-            throw new MissingSolutionException();
+        public void open(Configuration config) {
+            firstEvent = getRuntimeContext().getState(new ValueStateDescriptor<>("taxi ride event", TaxiRide.class));
         }
 
         @Override
-        public void processElement(TaxiRide ride, Context context, Collector<Long> out)
-                throws Exception {}
+        public void processElement(TaxiRide currentRide, Context context, Collector<Long> out)
+                throws Exception {
+            TaxiRide firstRide = firstEvent.value();
+            if (firstRide == null) {
+                firstEvent.update(currentRide);
+                context.timerService().registerEventTimeTimer(currentRide.getEventTimeMillis() + Duration.ofHours(2).toMillis());
+                return;
+            }
+            if (currentRide.isStart) {
+                if (Duration.between(currentRide.eventTime, firstRide.eventTime).compareTo(Duration.ofHours(2)) > 0) {
+                    out.collect(currentRide.rideId);
+                }
+            } else {
+                if (Duration.between(firstRide.eventTime, currentRide.eventTime).compareTo(Duration.ofHours(2)) > 0) {
+                    out.collect(currentRide.rideId);
+                }
+            }
+            context.timerService().deleteEventTimeTimer(firstRide.getEventTimeMillis() + Duration.ofHours(2).toMillis());
+            firstEvent.clear();
+        }
 
         @Override
-        public void onTimer(long timestamp, OnTimerContext context, Collector<Long> out)
-                throws Exception {}
+        public void onTimer(long timestamp, OnTimerContext context, Collector<Long> out) throws Exception {
+            TaxiRide taxiRide = firstEvent.value();
+            if (taxiRide.isStart) {
+                out.collect(taxiRide.rideId);
+            }
+            firstEvent.clear();
+        }
     }
 }
