@@ -101,7 +101,7 @@ public class LongRidesExercise {
     @VisibleForTesting
     public static class AlertFunction extends KeyedProcessFunction<Long, TaxiRide, Long> {
 
-        private ValueState<TaxiRide> firstEvent;
+        private transient ValueState<TaxiRide> firstEvent;
 
         @Override
         public void open(Configuration config) {
@@ -114,9 +114,7 @@ public class LongRidesExercise {
             TaxiRide firstRide = firstEvent.value();
             if (firstRide == null) {
                 firstEvent.update(currentRide);
-                if (currentRide.isStart) {
-                    context.timerService().registerEventTimeTimer(currentRide.getEventTimeMillis() + Duration.ofHours(2).toMillis());
-                }
+                context.timerService().registerEventTimeTimer(currentRide.getEventTimeMillis() + Duration.ofHours(2).toMillis());
                 return;
             }
             if (currentRide.isStart) {
@@ -124,18 +122,20 @@ public class LongRidesExercise {
                     out.collect(currentRide.rideId);
                 }
             } else {
-                context.timerService().deleteEventTimeTimer(firstRide.getEventTimeMillis() + Duration.ofHours(2).toMillis());
                 if (Duration.between(firstRide.eventTime, currentRide.eventTime).compareTo(Duration.ofHours(2)) > 0) {
                     out.collect(currentRide.rideId);
                 }
             }
+            context.timerService().deleteEventTimeTimer(firstRide.getEventTimeMillis() + Duration.ofHours(2).toMillis());
             firstEvent.clear();
         }
 
         @Override
         public void onTimer(long timestamp, OnTimerContext context, Collector<Long> out) throws Exception {
             TaxiRide taxiRide = firstEvent.value();
-            out.collect(taxiRide.rideId);
+            if (taxiRide.isStart) {
+                out.collect(taxiRide.rideId);
+            }
             firstEvent.clear();
         }
     }

@@ -20,6 +20,9 @@ package org.apache.flink.training.exercises.hourlytips;
 
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.common.functions.ReduceFunction;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -87,9 +90,10 @@ public class HourlyTipsExercise {
         DataStream<TaxiFare> fares = env.addSource(source)
                 .assignTimestampsAndWatermarks(strategy);
 
-        fares.keyBy(fare -> fare.driverId)
+        fares.map(new TaxiFareTuple2MapFunction())
+                .keyBy(t -> t.f0)
                 .window(TumblingEventTimeWindows.of(Time.hours(1)))
-                .process(new AddTips())
+                .reduce(new TipSumFunction(), new MyProcessWindowFunction())
                 .windowAll(TumblingEventTimeWindows.of(Time.hours(1)))
                 .maxBy(2)
                 .addSink(sink);
@@ -107,10 +111,35 @@ public class HourlyTipsExercise {
                             Collector<Tuple3<Long, Long, Float>> out) {
             float tipsSum = 0;
 
-            for (TaxiFare f: fares) {
+            for (TaxiFare f : fares) {
                 tipsSum += f.tip;
             }
             out.collect(Tuple3.of(context.window().getEnd(), key, tipsSum));
+        }
+    }
+
+    private static class TaxiFareTuple2MapFunction implements MapFunction<TaxiFare, Tuple2<Long, Float>> {
+        @Override
+        public Tuple2<Long, Float> map(TaxiFare value) {
+            return new Tuple2<>(value.driverId, value.tip);
+        }
+    }
+    private static class TipSumFunction implements ReduceFunction<Tuple2<Long, Float>> {
+        @Override
+        public Tuple2<Long, Float> reduce(Tuple2<Long, Float> value1, Tuple2<Long, Float> value2) {
+            return new Tuple2<>(value1.f0, value1.f1 + value2.f1);
+        }
+    }
+    private static class MyProcessWindowFunction
+            extends ProcessWindowFunction<Tuple2<Long, Float>, Tuple3<Long, Long, Float>, Long, TimeWindow> {
+
+        @Override
+        public void process(Long aLong,
+                            Context context,
+                            Iterable<Tuple2<Long, Float>> elements,
+                            Collector<Tuple3<Long, Long, Float>> out) {
+            Tuple2<Long, Float> next = elements.iterator().next();
+            out.collect(new Tuple3<>(context.window().getEnd(), next.f0, next.f1));
         }
     }
 }
